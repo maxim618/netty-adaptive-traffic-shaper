@@ -15,6 +15,10 @@ public class AdaptiveTrafficHandler extends ChannelInboundHandlerAdapter {
     // Параметры обфускации трафика (в будущем ими будет управлять ИИ)
     private final boolean isShapingEnabled = true;
 
+    // --- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ СБОРА МЕТРИК ИИ ---
+    private long lastPacketTimestamp = 0;      // Время прихода предыдущего пакета
+    private long totalBytesInSession = 0;      // Всего байт в текущей сессии
+
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
         // Клиент подключился к прокси. Нам нужно временно приостановить чтение,
@@ -31,7 +35,20 @@ public class AdaptiveTrafficHandler extends ChannelInboundHandlerAdapter {
 
         ByteBuf in = (ByteBuf) msg;
 
-        // Если туннель к удаленному серверу уже открыт — шлем данные туда
+        // --- ЭТАП 3: СБОР СЕТЕВЫХ ФИЧ (FEATURES) ДЛЯ ИИ ---
+        long currentTimestamp = System.currentTimeMillis();
+        int packetSize = in.readableBytes();
+
+        // Вычисляем Inter-Arrival Time (IAT) - задержку между пакетами в мс
+        long iat = (lastPacketTimestamp == 0) ? 0 : (currentTimestamp - lastPacketTimestamp);
+        lastPacketTimestamp = currentTimestamp;
+        totalBytesInSession += packetSize;
+
+        // Выводим собранные фичи в лог (в будущем этот массив double[] уйдет в модель Smile)
+        System.out.printf("[AI-Metrics] Пакет #%d -> Размер: %d байт | Интервал (IAT): %d мс | Всего в сессии: %d байт\n",
+                packetCounter + 1, packetSize, iat, totalBytesInSession);
+
+
         if (outboundChannel != null && outboundChannel.isActive()) {
             shaperWriteAndFlush(in);
             return;
@@ -42,7 +59,7 @@ public class AdaptiveTrafficHandler extends ChannelInboundHandlerAdapter {
         // Сейчас для теста жестко свяжем прокси с удаленным эмулятором или тестовым HTTPS сайтом.
         // Перенаправляем весь трафик, например, на демонстрационный эхо-сервер или целевой узел.
 
-        // ВАЖНО: Для полноценного прокси тут парсится хост и порт из первого пакета.
+        // Очень важно - для полноценного прокси тут парсится хост и порт из первого пакета.
         String remoteHost = "echo.websocket.org"; // Замените на ваш тестовый хост/IP для экспериментов
         int remotePort = 443;
 
@@ -95,8 +112,7 @@ public class AdaptiveTrafficHandler extends ChannelInboundHandlerAdapter {
         // ИИ-логика: Цензоры анализируют первые 3-4 пакета (Handshake).
         // Модифицируем только их, чтобы не терять скорость на больших потоках данных.
         if (isShapingEnabled && packetCounter <= 3 && buf.readableBytes() > 30) {
-            System.out.printf("[Shaper-AI] Защита сессии! Модификация пакета #%d (%d байт)\n",
-                    packetCounter, buf.readableBytes());
+            System.out.printf("[Shaper-AI] Модификация пакета #%d (%d байт)\n", packetCounter, buf.readableBytes());
 
             while (buf.readableBytes() > 0) {
                 // ИИ-эмуляция: режем пакет на случайные микро-куски от 5 до 25 байт
@@ -111,7 +127,6 @@ public class AdaptiveTrafficHandler extends ChannelInboundHandlerAdapter {
                     @Override
                     public void run() {
                         outboundChannel.writeAndFlush(chunk);
-                        System.out.println("[Shaper-AI] Отправлен фрагмент: " + chunkSize + " байт");
                     }
                 }, jitterMs, TimeUnit.MILLISECONDS);
             }
